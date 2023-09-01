@@ -1,14 +1,16 @@
 import json
 from OTXv2 import OTXv2, IndicatorTypes
-from pandas import json_normalize
 from datetime import datetime, timedelta
 import codecs
 import csv
 import os
+import requests
 from datetime import date, datetime
 
-# API key
+# API key alienvault
 otx = OTXv2("")
+# API key VirusTotal
+vt = ""
 
 # Get today date of script execution
 def get_today_date():
@@ -31,33 +33,35 @@ def save_to_file(data):
     with open(log_dir+namefile, "a") as myfile:
         json.dump(data, myfile, separators=(",", ":"), default=json_datetime_serializer)
         myfile.write('\n')
-        #json.dump(data, myfile, indent=4)
 
 # Severity points
-def points_severity(author_username, sections_tags, name_pulse, pulse_count, date_created, indicator_type, indicator):
+def points_severity(indicator_type, indicator, indicator_details):
     # 5. Alienvault + malware + http scan 
     # 4. pulse_count + malware + http scan   
     # 3. pulse_count = revision manual
     # 2. No malicioso 
     # 1. Not found
-    if author_username.lower() == 'alienvault' and 'malware' and 'http_scans' in sections_tags:
-        data = {"severity": '5', "date_created": date_created, "sections_tags":sections_tags ,"author_username":author_username, "name_pulse":name_pulse, "pulse_count":pulse_count, "indicator_type": indicator_type, "indicator": indicator}
+    comunityscore_vt = get_data_VT(indicator_type, indicator)
+    author_username,name_pulse,sections_tags,pulse_count,date_created = get_dataalienvault(indicator_details,indicator_type, indicator)
+
+    if author_username.lower() == 'alienvault' and 'malware' and 'http_scans' in sections_tags and comunityscore_vt is not None and comunityscore_vt  >= 2:
+        data = {"severity": '5', "date_created": date_created, "comunityscore_vt":comunityscore_vt,"sections_tags":sections_tags ,"author_username":author_username, "name_pulse":name_pulse, "pulse_count":pulse_count, "indicator_type": indicator_type, "indicator": indicator}
         save_to_file(data)
         print(data)
-    elif pulse_count >= 2 and 'malware' and 'http_scans' in sections_tags:
-        data = {"severity": '4', "date_created": date_created, "sections_tags":sections_tags ,"author_username":author_username, "name_pulse":name_pulse, "pulse_count":pulse_count, "indicator_type": indicator_type, "indicator": indicator}
+    elif pulse_count >= 2 and 'malware' and 'http_scans' in sections_tags and comunityscore_vt is not None and comunityscore_vt >= 2:
+        data = {"severity": '4', "date_created": date_created, "comunityscore_vt":comunityscore_vt,"sections_tags":sections_tags ,"author_username":author_username, "name_pulse":name_pulse, "pulse_count":pulse_count, "indicator_type": indicator_type, "indicator": indicator}
         save_to_file(data)
         print(data)
-    elif pulse_count >= 2:
-        data = {"severity": '3', "date_created": date_created, "sections_tags":sections_tags ,"author_username":author_username, "name_pulse":name_pulse, "pulse_count":pulse_count, "indicator_type": indicator_type, "indicator": indicator}
+    elif pulse_count >= 2 and comunityscore_vt is not None and comunityscore_vt == 1:
+        data = {"severity": '3', "date_created": date_created, "comunityscore_vt":comunityscore_vt,"sections_tags":sections_tags ,"author_username":author_username, "name_pulse":name_pulse, "pulse_count":pulse_count, "indicator_type": indicator_type, "indicator": indicator}
         save_to_file(data)
         print(data)
-    elif pulse_count < 2:
-        data = {"severity": '2', "date_created": date_created, "sections_tags":sections_tags ,"author_username":author_username, "name_pulse":name_pulse, "pulse_count":pulse_count, "indicator_type": indicator_type, "indicator": indicator}
+    elif pulse_count < 2 and comunityscore_vt is not None and comunityscore_vt >= 0:
+        data = {"severity": '2', "date_created": date_created, "comunityscore_vt":comunityscore_vt,"sections_tags":sections_tags ,"author_username":author_username, "name_pulse":name_pulse, "pulse_count":pulse_count, "indicator_type": indicator_type, "indicator": indicator}
         save_to_file(data)
         print(data)
     else:
-        data = {"severity": '1', "indicator_type": indicator_type, "indicator": indicator}
+        data = {"severity": '1', "date_created": date_created, "comunityscore_vt":comunityscore_vt,"sections_tags":sections_tags ,"author_username":author_username, "name_pulse":name_pulse, "pulse_count":pulse_count, "indicator_type": indicator_type, "indicator": indicator}
         save_to_file(data)
         print(data)
 
@@ -67,7 +71,38 @@ def get_dataalienvault(indicator_details,indicator_type, indicator):
     sections_tags = indicator_details.get('general', {}).get('sections', {})
     pulse_count = indicator_details.get('general', {}).get('pulse_info', {}).get('count', {})
     date_created = indicator_details.get('general', {}).get('pulse_info', {}).get('pulses', [{}])[0].get('created', {})
-    points_severity(author_username, sections_tags, name_pulse, pulse_count, date_created, indicator_type, indicator)
+    return author_username,name_pulse,sections_tags,pulse_count,date_created
+
+def get_data_VT(indicator_type, indicator):
+    if "domain" in indicator_type:
+        url = f"https://www.virustotal.com/api/v3/domains/{indicator}"
+    elif "IPv4" in indicator_type or "IPv6" in indicator_type:
+        url = f"https://www.virustotal.com/api/v3/ip_addresses/{indicator}"
+    elif "hostname" in indicator_type:
+        url = f"https://www.virustotal.com/api/v3/domains/{indicator}"
+    elif "url" in indicator_type:
+        url = f"https://www.virustotal.com/api/v3/urls/{indicator}"
+    elif "FileHash-MD5" in indicator_type or "FileHash-SHA1" in indicator_type or "FileHash-SHA256" in indicator_type:
+        url = f"https://www.virustotal.com/api/v3/files/{indicator}"
+
+    if url:
+        headers = {
+            'x-apikey': vt
+        }
+        try:
+            response = requests.get(url, headers=headers)
+
+            if response.status_code == 200:
+                data = response.json()
+                malicious = data['data']['attributes']['last_analysis_stats']['malicious']
+                return malicious
+            else:
+                print(f"Error en la solicitud: {response.status_code}")
+
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    else:
+        print("Tipo de indicador no soportado")
 
 def read_indicators(namefile):    
     indicador = []
@@ -86,37 +121,20 @@ def get_otxindicators(indicator_type, indicator):
         indicator_details = otx.get_indicator_details_full(IndicatorTypes.IPv4, indicator)
     elif "IPv6" in indicator_type:
         indicator_details = otx.get_indicator_details_full(IndicatorTypes.IPv6, indicator)
-    elif "hostname" in indicator_type:
-        indicator_details = otx.get_indicator_details_full(IndicatorTypes.HOSTNAME, indicator)
-    elif "email" in indicator_type:
-        indicator_details = otx.get_indicator_details_full(IndicatorTypes.EMAIL, indicator)
     elif "url" in indicator_type:
         indicator_details = otx.get_indicator_details_full(IndicatorTypes.URL, indicator)
-    elif "uri" in indicator_type:
-        indicator_details = otx.get_indicator_details_full(IndicatorTypes.URI, indicator)
     elif "FileHash-MD5" in indicator_type:
         indicator_details = otx.get_indicator_details_full(IndicatorTypes.FILE_HASH_MD5, indicator)
     elif "FileHash-SHA1" in indicator_type:
         indicator_details = otx.get_indicator_details_full(IndicatorTypes.FILE_HASH_SHA1, indicator)
     elif "FileHash-SHA256" in indicator_type:
         indicator_details = otx.get_indicator_details_full(IndicatorTypes.FILE_HASH_SHA256, indicator)
-    elif "FileHash-PEHASH" in indicator_type:
-        indicator_details = otx.get_indicator_details_full(IndicatorTypes.FILE_HASH_PEHASH, indicator)
-    elif "FileHash-IMPHASH" in indicator_type:
-        indicator_details = otx.get_indicator_details_full(IndicatorTypes.FILE_HASH_IMPHASH, indicator)
-    elif "CIDR" in indicator_type:
-        indicator_details = otx.get_indicator_details_full(IndicatorTypes.CIDR, indicator)
-    elif "FilePath" in indicator_type:
-        indicator_details = otx.get_indicator_details_full(IndicatorTypes.FILE_PATH, indicator)
-    elif "Mutex" in indicator_type:
-        indicator_details = otx.get_indicator_details_full(IndicatorTypes.MUTEX, indicator)
-    elif "cve" in indicator_type:
-        indicator_details = otx.get_indicator_details_full(IndicatorTypes.CVE, indicator)
     else:
         indicator_details = None
 
     if indicator_details:
-        get_dataalienvault(indicator_details,indicator_type, indicator)
+        #get_dataalienvault(indicator_details,indicator_type, indicator)
+        points_severity(indicator_type, indicator,indicator_details)
     else:
         print(f'Unsupported indicator type: {indicator_type}')
         raise SystemExit
